@@ -43,7 +43,8 @@ import (
 // List existing conntrack entries and calculate the desired conntrack state
 // based on the current Services and Endpoints.
 func CleanStaleEntries(ct Interface, ipFamily v1.IPFamily,
-	svcPortMap proxy.ServicePortMap, endpointsMap proxy.EndpointsMap) {
+	svcPortMap proxy.ServicePortMap, endpointsMap proxy.EndpointsMap,
+	deletedUDPServices proxy.ServicePortMap) {
 
 	start := time.Now()
 	klog.V(4).InfoS("Started to reconcile conntrack entries", "ipFamily", ipFamily)
@@ -63,6 +64,40 @@ func CleanStaleEntries(ct Interface, ipFamily v1.IPFamily,
 	serviceIPEndpoints := make(map[string]sets.Set[string])
 	// serviceNodePortEndpoints maps service NodePort to the set of serving endpoints  (Endpoint IP and Port).
 	serviceNodePortEndpoints := make(map[int]sets.Set[string])
+
+	// addService registers the frontends of a UDP service and the set of serving
+	// endpoints used to decide which conntrack flows are stale.
+	addService := func(svc proxy.ServicePort, endpoints sets.Set[string]) {
+		portStr := strconv.Itoa(svc.Port())
+		// clusterIP:Port
+		serviceIPEndpoints[net.JoinHostPort(svc.ClusterIP().String(), portStr)] = endpoints
+		// loadbalancerIP:Port
+		for _, loadBalancerIP := range svc.LoadBalancerVIPs() {
+			serviceIPEndpoints[net.JoinHostPort(loadBalancerIP.String(), portStr)] = endpoints
+		}
+		// externalIP:Port
+		for _, externalIP := range svc.ExternalIPs() {
+			serviceIPEndpoints[net.JoinHostPort(externalIP.String(), portStr)] = endpoints
+		}
+		// NodePort entries are matched on the destination port only, so with an
+		// empty endpoints set every UDP flow towards that port number would be
+		// removed, including flows not owned by kube-proxy (e.g. traffic to an
+		// unrelated host on the same port). Skip NodePort cleanup for services
+		// without serving endpoints until the match can be restricted to node IPs.
+		if svc.NodePort() != 0 && endpoints.Len() > 0 {
+			// *:NodePort
+			serviceNodePortEndpoints[svc.NodePort()] = endpoints
+		}
+	}
+
+	// Process deleted UDP services first so that any frontend IPs reused by a
+	// live service are overwritten with the live service's endpoints below.
+	for _, svc := range deletedUDPServices {
+		if svc.Protocol() != v1.ProtocolUDP {
+			continue
+		}
+		addService(svc, sets.New[string]())
+	}
 
 	for svcName, svc := range svcPortMap {
 		// we are only interested in UDP services
@@ -96,30 +131,7 @@ func CleanStaleEntries(ct Interface, ipFamily v1.IPFamily,
 		// every packet, so without this cleanup they keep sending traffic to the
 		// deleted endpoint IP indefinitely.
 
-		// we need to filter entries that are directed to a Service IP:Port frontend
-		// that does not have an Endpoint IP:Port backend as part of the serving endpoints
-		portStr := strconv.Itoa(svc.Port())
-		// clusterIP:Port
-		serviceIPEndpoints[net.JoinHostPort(svc.ClusterIP().String(), portStr)] = endpoints
-		// loadbalancerIP:Port
-		for _, loadBalancerIP := range svc.LoadBalancerVIPs() {
-			serviceIPEndpoints[net.JoinHostPort(loadBalancerIP.String(), portStr)] = endpoints
-		}
-		// externalIP:Port
-		for _, externalIP := range svc.ExternalIPs() {
-			serviceIPEndpoints[net.JoinHostPort(externalIP.String(), portStr)] = endpoints
-		}
-		// we need to filter entries that are directed to a *:NodePort that does not have
-		// an Endpoint IP:Port backend as part of the serving endpoints.
-		// NodePort entries are matched on the destination port only, so with an
-		// empty endpoints set every UDP flow towards that port number would be
-		// removed, including flows not owned by kube-proxy (e.g. traffic to an
-		// unrelated host on the same port). Skip NodePort cleanup for services
-		// without serving endpoints until the match can be restricted to node IPs.
-		if svc.NodePort() != 0 && endpoints.Len() > 0 {
-			// *:NodePort
-			serviceNodePortEndpoints[svc.NodePort()] = endpoints
-		}
+		addService(svc, endpoints)
 	}
 
 	var flows []*netlink.ConntrackFlow

@@ -1420,9 +1420,10 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
 		proxier.logger.Error(err, "Error syncing healthcheck endpoints")
 	}
 
-	if endpointUpdateResult.ConntrackCleanupRequired {
+	deletedUDPServicePorts := serviceUpdateResult.DeletedServices.UDPPorts()
+	if endpointUpdateResult.ConntrackCleanupRequired || len(deletedUDPServicePorts) > 0 {
 		// Finish housekeeping, clear stale conntrack entries for UDP Services
-		conntrack.CleanStaleEntries(proxier.conntrack, proxier.ipFamily, proxier.svcPortMap, proxier.endpointsMap)
+		conntrack.CleanStaleEntries(proxier.conntrack, proxier.ipFamily, proxier.svcPortMap, proxier.endpointsMap, deletedUDPServicePorts)
 	}
 	return
 }

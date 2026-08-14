@@ -17,6 +17,7 @@ limitations under the License.
 package proxy
 
 import (
+	"maps"
 	"reflect"
 	"sync"
 
@@ -114,6 +115,21 @@ type UpdateServiceMapResult struct {
 	// UpdatedServices lists the names of all services added/updated/deleted since the
 	// last Update.
 	UpdatedServices sets.Set[types.NamespacedName]
+	// DeletedServices lists the ServicePorts of all service ports removed since the
+	// last Update. Callers can use this to clean up stale state (e.g. conntrack
+	// entries for deleted UDP services).
+	DeletedServices ServicePortMap
+}
+
+// UDPPorts returns a new ServicePortMap containing only the UDP ports from sm.
+func (sm ServicePortMap) UDPPorts() ServicePortMap {
+	ports := make(ServicePortMap)
+	for svcPortName, info := range sm {
+		if info.Protocol() == v1.ProtocolUDP {
+			ports[svcPortName] = info
+		}
+	}
+	return ports
 }
 
 // HealthCheckNodePorts returns a map of Service names to HealthCheckNodePort values
@@ -171,6 +187,7 @@ func (sm ServicePortMap) Update(sct *ServiceChangeTracker) UpdateServiceMapResul
 
 	result := UpdateServiceMapResult{
 		UpdatedServices: sets.New[types.NamespacedName](),
+		DeletedServices: ServicePortMap{},
 	}
 
 	for nn, change := range sct.items {
@@ -183,6 +200,7 @@ func (sm ServicePortMap) Update(sct *ServiceChangeTracker) UpdateServiceMapResul
 		// filter out the Update event of current changes from previous changes
 		// before calling unmerge() so that can skip deleting the Update events.
 		change.previous.filter(change.current)
+		maps.Copy(result.DeletedServices, change.previous)
 		sm.unmerge(change.previous)
 	}
 	// clear changes after applying them to ServicePortMap.
