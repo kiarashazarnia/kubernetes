@@ -115,21 +115,14 @@ type UpdateServiceMapResult struct {
 	// UpdatedServices lists the names of all services added/updated/deleted since the
 	// last Update.
 	UpdatedServices sets.Set[types.NamespacedName]
-	// DeletedServices lists the ServicePorts of all service ports removed since the
-	// last Update. Callers can use this to clean up stale state (e.g. conntrack
+	// DeletedServices holds all the ServicePorts removed since the last Update,
+	// either because their Service was deleted or because the port was removed
+	// from it. Callers can use this to clean up stale state (e.g. conntrack
 	// entries for deleted UDP services).
 	DeletedServices ServicePortMap
-}
-
-// UDPPorts returns a new ServicePortMap containing only the UDP ports from sm.
-func (sm ServicePortMap) UDPPorts() ServicePortMap {
-	ports := make(ServicePortMap)
-	for svcPortName, info := range sm {
-		if info.Protocol() == v1.ProtocolUDP {
-			ports[svcPortName] = info
-		}
-	}
-	return ports
+	// ConntrackCleanupRequired will be true if any UDP ServicePort was deleted, false otherwise.
+	// It's used to minimise conntrack cleanup calls.
+	ConntrackCleanupRequired bool
 }
 
 // HealthCheckNodePorts returns a map of Service names to HealthCheckNodePort values
@@ -202,6 +195,19 @@ func (sm ServicePortMap) Update(sct *ServiceChangeTracker) UpdateServiceMapResul
 		change.previous.filter(change.current)
 		maps.Copy(result.DeletedServices, change.previous)
 		sm.unmerge(change.previous)
+
+		// result.ConntrackCleanupRequired should be true if any one of the deleted
+		// ServicePorts is UDP. Once true, we don't update the value.
+		if result.ConntrackCleanupRequired {
+			continue
+		}
+		// Check if the deleted service had any UDP ServicePort
+		for svcPort := range change.previous {
+			if svcPort.Protocol == v1.ProtocolUDP {
+				result.ConntrackCleanupRequired = true
+				break
+			}
+		}
 	}
 	// clear changes after applying them to ServicePortMap.
 	sct.items = make(map[types.NamespacedName]*serviceChange)

@@ -415,6 +415,9 @@ var _ = common.SIGDescribe("Conntrack", func() {
 		// the client stops receiving traffic.
 		// UDP conntrack entries timeout is 30 sec by default.
 		ginkgo.By("checking client pod stops receiving traffic after the service is deleted")
+		// "FAIL\n" is the probe's enter-fail sentinel; the "FAIL (N times)" summary
+		// printed when leaving the fail state does not contain "FAIL\n", so only an
+		// actual failure matches.
 		if err := wait.PollUntilContextTimeout(ctx, 5*time.Second, time.Minute, true, logContainsFn("FAIL\n", podClient)); err != nil {
 			logs, err = e2epod.GetPodLogs(ctx, cs, ns, podClient, podClient)
 			framework.ExpectNoError(err)

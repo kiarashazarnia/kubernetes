@@ -1246,10 +1246,9 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
 	metrics.SyncProxyRulesNoLocalEndpointsTotal.WithLabelValues("internal", string(proxier.ipFamily)).Set(float64(proxier.serviceNoLocalEndpointsInternal.Len()))
 	metrics.SyncProxyRulesNoLocalEndpointsTotal.WithLabelValues("external", string(proxier.ipFamily)).Set(float64(proxier.serviceNoLocalEndpointsExternal.Len()))
 
-	deletedUDPServicePorts := serviceUpdateResult.DeletedServices.UDPPorts()
-	if endpointUpdateResult.ConntrackCleanupRequired || len(deletedUDPServicePorts) > 0 {
+	if endpointUpdateResult.ConntrackCleanupRequired || serviceUpdateResult.ConntrackCleanupRequired {
 		// Finish housekeeping, clear stale conntrack entries for UDP Services
-		conntrack.CleanStaleEntries(proxier.conntrack, proxier.ipFamily, proxier.svcPortMap, proxier.endpointsMap, deletedUDPServicePorts)
+		conntrack.CleanStaleEntries(proxier.conntrack, proxier.ipFamily, proxier.svcPortMap, proxier.endpointsMap, serviceUpdateResult.DeletedServices)
 	}
 	return
 }
